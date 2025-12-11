@@ -8,6 +8,22 @@ from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
 
 load_dotenv()  # loads .env into environment variables
 
+
+def normalize_artist_name(name: str) -> str:
+    """
+    Normalize artist name for sorting by removing leading 'the'.
+
+    Examples:
+        "The Beatles" -> "beatles"
+        "The Crystal Method" -> "crystal method"
+        "Them Crooked Vultures" -> "them crooked vultures" (only leading "the")
+    """
+    lower_name = name.lower()
+    if lower_name.startswith("the "):
+        return lower_name[4:]  # Remove "the " (4 characters)
+    return lower_name
+
+
 def sort_playlist_by_artist(
     client_id: str,
     client_secret: str,
@@ -47,18 +63,20 @@ def sort_playlist_by_artist(
         print("No tracks found in playlist.")
         return
 
-    print(f"Found {len(tracks)} tracks. Sorting by artist...")
+    print(f"Found {len(tracks)} tracks. Sorting by artist, then album...")
 
     indexed_tracks = []
     for idx, t in enumerate(tracks):
         artists = t.get("artists") or []
-        artist_name = artists[0]["name"].lower() if artists else ""
+        artist_name = normalize_artist_name(artists[0]["name"]) if artists else ""
+        album = t.get("album") or {}
+        album_name = album.get("name", "").lower()
         track_name = t.get("name", "")
         uri = t["uri"]
-        indexed_tracks.append((idx, artist_name, track_name, uri))
+        indexed_tracks.append((idx, artist_name, album_name, track_name, uri))
 
-    indexed_tracks.sort(key=lambda x: (x[1], x[2].lower()), reverse=reverse)
-    sorted_uris = [t[3] for t in indexed_tracks]
+    indexed_tracks.sort(key=lambda x: (x[1], x[2], x[3].lower()), reverse=reverse)
+    sorted_uris = [t[4] for t in indexed_tracks]
 
     if len(sorted_uris) != len(tracks):
         print("ERROR: Track count mismatch after sorting. Aborting.")
@@ -76,7 +94,7 @@ def sort_playlist_by_artist(
         sp.playlist_add_items(playlist_id, chunk)
         offset += chunk_size
 
-    print("Done! Playlist is now sorted by artist.")
+    print("Done! Playlist is now sorted by artist, then album.")
 
 
 def main():
