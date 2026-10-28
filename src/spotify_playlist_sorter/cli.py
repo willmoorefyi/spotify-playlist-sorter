@@ -44,7 +44,11 @@ def build_sorted_tracks(
     items: list[dict], reverse: bool = False
 ) -> tuple[list[dict], list[dict]]:
     """
-    Sort playlist items by artist, then album, then track name.
+    Sort playlist items by artist (alphabetical), then album (chronological),
+    then position within the album (disc, track number).
+
+    `reverse` flips only the artist order; albums stay oldest-first and
+    tracks stay in album order.
 
     Returns (sorted_tracks, none_items) where none_items are items whose
     track is unavailable (None) and cannot be re-added.
@@ -58,15 +62,26 @@ def build_sorted_tracks(
             continue
         tracks.append(track)
 
-    def sort_key(t: dict) -> tuple[str, str, str]:
+    def artist_key(t: dict) -> str:
         artists = t.get("artists") or []
-        artist_name = normalize_artist_name(artists[0]["name"]) if artists else ""
-        album = t.get("album") or {}
-        album_name = (album.get("name") or "").lower()
-        track_name = (t.get("name") or "").lower()
-        return (artist_name, album_name, track_name)
+        return normalize_artist_name(artists[0]["name"]) if artists else ""
 
-    return sorted(tracks, key=sort_key, reverse=reverse), none_items
+    def album_key(t: dict) -> tuple[str, str, str, int, int, str]:
+        album = t.get("album") or {}
+        # Dates are "YYYY", "YYYY-MM", or "YYYY-MM-DD"; these compare correctly
+        # as strings. Albums with no date sort after dated ones.
+        release_date = album.get("release_date") or "9999"
+        album_name = (album.get("name") or "").lower()
+        album_id = album.get("id") or ""
+        disc_number = t.get("disc_number") or 0
+        track_number = t.get("track_number") or 0
+        track_name = (t.get("name") or "").lower()
+        return (release_date, album_name, album_id, disc_number, track_number, track_name)
+
+    # Two stable passes so `reverse` applies to artists only.
+    tracks.sort(key=album_key)
+    tracks.sort(key=artist_key, reverse=reverse)
+    return tracks, none_items
 
 
 def write_backup(
@@ -114,7 +129,11 @@ def print_preview(sorted_tracks: list[dict]) -> None:
     for position, t in enumerate(sorted_tracks, start=1):
         artists = t.get("artists") or []
         artist_name = artists[0]["name"] if artists else "(unknown artist)"
-        album_name = (t.get("album") or {}).get("name") or "(unknown album)"
+        album = t.get("album") or {}
+        album_name = album.get("name") or "(unknown album)"
+        year = (album.get("release_date") or "")[:4]
+        if year:
+            album_name = f"{album_name} ({year})"
         print(f"{position:0{width}d}. {artist_name} — {album_name} — {t.get('name', '')}")
 
 
@@ -154,7 +173,7 @@ def sort_playlist_by_artist(
         print("No tracks found in playlist.")
         return True
 
-    print(f"Found {len(sorted_tracks)} tracks. Sorting by artist, then album...")
+    print(f"Found {len(sorted_tracks)} tracks. Sorting by artist, then album release date...")
 
     if len(sorted_tracks) + len(none_items) != len(items):
         print("ERROR: Track count mismatch after sorting. Aborting.")
@@ -197,7 +216,7 @@ def sort_playlist_by_artist(
         sp.playlist_add_items(playlist_id, chunk)
         offset += chunk_size
 
-    print("Done! Playlist is now sorted by artist, then album.")
+    print("Done! Playlist is now sorted by artist, then album release date.")
     return True
 
 

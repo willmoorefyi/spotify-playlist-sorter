@@ -28,7 +28,7 @@ A Python CLI tool that sorts Spotify playlists alphabetically by artist name usi
 - ✅ Test suite with unit tests
 
 ### Current Features
-- Sort by first artist name (primary) and track name (secondary)
+- Sort by first artist name, then album release date, then album track order
 - Command-line interface with argparse
 - Environment variable configuration via .env
 - Error handling for missing credentials and empty playlists
@@ -50,7 +50,7 @@ tests/
 
 #### Helpers
 - `fetch_playlist_items()`: paginated fetch of raw playlist items (including unavailable ones)
-- `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; the sort key lives in its inner `sort_key()`
+- `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; two stable passes: `album_key()` (release date → album → disc → track number), then `artist_key()` (with `reverse`)
 - `write_backup()`: writes the JSON backup of the original order; raises `OSError` on failure
 - `print_preview()`: numbered dry-run output
 
@@ -58,7 +58,7 @@ tests/
 - **Purpose**: Orchestrates the sort; returns `False` on failure
 - **Steps**:
   1. Authenticate with Spotify OAuth
-  2. Fetch all items, sort by artist → album → track name
+  2. Fetch all items, sort by artist → album release date → album track order
   3. Warn about local files / episodes; note unavailable items that will be dropped
   4. `--dry-run`: print preview and stop
   5. Write JSON backup (abort if it fails) unless `--no-backup`
@@ -80,7 +80,7 @@ tests/
 ## Known Limitations
 
 1. **Single Artist Sorting**: Only uses the first artist for multi-artist tracks
-2. **Artist-Only Sorting**: Cannot sort by album, release date, or other metadata
+2. **Fixed Sort Order**: Artist → album release date → track order is hard-coded; no alternative sort modes
 3. **No Restore**: Backups are written as JSON but there's no restore command yet
 4. **Browser Required**: OAuth flow requires browser access (no headless mode)
 5. **Non-atomic Rewrite**: A local-file URI in a later chunk can fail after the replace call has truncated the playlist; restore from backup
@@ -156,7 +156,7 @@ tests/
 
 1. Add argument to parser in `main()`
 2. Pass argument to `sort_playlist_by_artist()`
-3. Modify `sort_key()` inside `build_sorted_tracks()`
+3. Modify `artist_key()` / `album_key()` inside `build_sorted_tracks()`
 4. Update README.md with new option
 5. Add tests for new sort behavior
 
@@ -189,6 +189,8 @@ poetry run pytest -v
 - Added `--dry-run` preview mode
 - Added automatic JSON backup before modifying playlists (`--no-backup`, `--backup-dir`)
 - Refactored `cli.py` into helpers; `main()` exits 1 on failure
+- Albums now sort chronologically within an artist, tracks in album order; `--reverse` flips artists only
+- Dry-run preview shows album release year
 - Warn about local files/episodes and unavailable items
 
 ### 2025-12-11

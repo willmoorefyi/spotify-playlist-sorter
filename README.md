@@ -118,7 +118,7 @@ sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M \
 
 1. **Authentication**: On first run, the app opens your browser for Spotify OAuth authentication. Your access token is cached locally.
 2. **Fetch Tracks**: The app retrieves all tracks from your playlist using pagination.
-3. **Sort**: Tracks are sorted alphabetically by artist name, then by album name, then by track name.
+3. **Sort**: Tracks are sorted alphabetically by artist name, then chronologically by album release date, then in album track order.
 4. **Backup**: Before changing anything, the current order is saved to `backups/<playlist_id>-<UTC timestamp>.json` (playlist name, snapshot ID, and every item with URI, artists, album, and date added). If the backup can't be written, the playlist is left untouched and the command exits with code 1.
 5. **Update**: The playlist is updated on Spotify in chunks of 100 tracks (API limit).
 
@@ -129,8 +129,9 @@ With `--dry-run`, steps 4–5 are skipped and a numbered preview (`Artist — Al
 ## Sorting Logic
 
 - Primary sort: First artist's name (case-insensitive, ignoring leading "the")
-- Secondary sort: Album name (case-insensitive)
-- Tertiary sort: Track name (case-insensitive)
+- Secondary sort: Album release date, oldest first (undated albums go last; same-date albums are ordered by name)
+- Tertiary sort: Position on the album (disc number, then track number)
+- `--reverse` flips the artist order only; albums stay chronological and tracks stay in album order
 - For tracks with multiple artists, only the first artist is used for sorting
 - Artist names starting with "The" are sorted by the word following "The" (e.g., "The Beatles" sorts under "B")
 

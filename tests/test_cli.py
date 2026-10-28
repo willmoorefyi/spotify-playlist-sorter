@@ -338,6 +338,115 @@ UNSORTED_ITEMS = [
 ]
 
 
+class TestChronologicalAlbumSort:
+    """Albums by the same artist sort by release date; tracks in album order."""
+
+    @staticmethod
+    def _track(artist, album, release_date, track_number, name, uri, disc_number=1, album_id=None):
+        return {"track": {
+            "artists": [{"name": artist}],
+            "name": name,
+            "uri": uri,
+            "disc_number": disc_number,
+            "track_number": track_number,
+            "album": {"name": album, "release_date": release_date, "id": album_id or album},
+        }}
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_albums_chronological_tracks_in_album_order(self, mock_spotify_class):
+        t = self._track
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            t("Radiohead", "Amnesiac", "2001-06-05", 3, "Pyramid Song", "spotify:track:amn3"),
+            t("Radiohead", "OK Computer", "1997-05-21", 6, "Karma Police", "spotify:track:okc6"),
+            t("Radiohead", "Kid A", "2000-10-02", 1, "Everything In Its Right Place", "spotify:track:kid1"),
+            t("Radiohead", "OK Computer", "1997-05-21", 2, "Paranoid Android", "spotify:track:okc2"),
+            t("Radiohead", "Amnesiac", "2001-06-05", 1, "Packt Like Sardines", "spotify:track:amn1"),
+            t("Arcade Fire", "Funeral", "2004-09-14", 5, "Rebellion", "spotify:track:af5"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with("playlist_123", [
+            "spotify:track:af5",   # Arcade Fire
+            "spotify:track:okc2",  # OK Computer (1997) #2
+            "spotify:track:okc6",  # OK Computer (1997) #6
+            "spotify:track:kid1",  # Kid A (2000)
+            "spotify:track:amn1",  # Amnesiac (2001) #1
+            "spotify:track:amn3",  # Amnesiac (2001) #3
+        ])
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_disc_number_before_track_number(self, mock_spotify_class):
+        t = self._track
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            t("A", "Double", "1990", 1, "D2T1", "spotify:track:d2t1", disc_number=2),
+            t("A", "Double", "1990", 9, "D1T9", "spotify:track:d1t9", disc_number=1),
+            t("A", "Double", "1990", 1, "D1T1", "spotify:track:d1t1", disc_number=1),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with(
+            "playlist_123", ["spotify:track:d1t1", "spotify:track:d1t9", "spotify:track:d2t1"]
+        )
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_mixed_date_precision_and_missing_dates(self, mock_spotify_class):
+        t = self._track
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            t("A", "Undated", None, 1, "U", "spotify:track:undated"),
+            t("A", "Later", "1995-03", 1, "L", "spotify:track:later"),
+            t("A", "Earlier", "1995", 1, "E", "spotify:track:earlier"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with(
+            "playlist_123", ["spotify:track:earlier", "spotify:track:later", "spotify:track:undated"]
+        )
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_same_date_albums_do_not_interleave(self, mock_spotify_class):
+        t = self._track
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            t("A", "Same", "2000", 1, "X1", "spotify:track:x1", album_id="x"),
+            t("A", "Same", "2000", 1, "Y1", "spotify:track:y1", album_id="y"),
+            t("A", "Same", "2000", 2, "X2", "spotify:track:x2", album_id="x"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with(
+            "playlist_123", ["spotify:track:x1", "spotify:track:x2", "spotify:track:y1"]
+        )
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_reverse_only_flips_artists(self, mock_spotify_class):
+        t = self._track
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            t("Alpha", "Old", "1990", 1, "A-old", "spotify:track:a_old"),
+            t("Zebra", "New", "2020", 2, "Z-new2", "spotify:track:z_new2"),
+            t("Zebra", "Old", "1990", 1, "Z-old", "spotify:track:z_old"),
+            t("Zebra", "New", "2020", 1, "Z-new1", "spotify:track:z_new1"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", reverse=True)
+
+        mock_sp.playlist_replace_items.assert_called_once_with("playlist_123", [
+            "spotify:track:z_old", "spotify:track:z_new1", "spotify:track:z_new2", "spotify:track:a_old",
+        ])
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_preview_shows_release_year(self, mock_spotify_class, capsys):
+        make_mock_sp(mock_spotify_class, [
+            self._track("Radiohead", "OK Computer", "1997-05-21", 1, "Airbag", "spotify:track:okc1"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        assert "1. Radiohead — OK Computer (1997) — Airbag" in capsys.readouterr().out
+
+
 class TestDryRun:
     """Tests for --dry-run behavior."""
 
