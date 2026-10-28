@@ -1,6 +1,9 @@
 import os
 import sys
+import json
 import argparse
+from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 
 import spotipy
@@ -24,13 +27,108 @@ def normalize_artist_name(name: str) -> str:
     return lower_name
 
 
+def fetch_playlist_items(sp: spotipy.Spotify, playlist_id: str) -> list[dict]:
+    """Fetch all raw playlist items (including unavailable ones) via pagination."""
+    items = []
+    results = sp.playlist_items(playlist_id, additional_types=["track"])
+    while True:
+        items.extend(results.get("items", []))
+        if results.get("next"):
+            results = sp.next(results)
+        else:
+            break
+    return items
+
+
+def build_sorted_tracks(
+    items: list[dict], reverse: bool = False
+) -> tuple[list[dict], list[dict]]:
+    """
+    Sort playlist items by artist, then album, then track name.
+
+    Returns (sorted_tracks, none_items) where none_items are items whose
+    track is unavailable (None) and cannot be re-added.
+    """
+    tracks = []
+    none_items = []
+    for item in items:
+        track = item.get("track")
+        if not track:
+            none_items.append(item)
+            continue
+        tracks.append(track)
+
+    def sort_key(t: dict) -> tuple[str, str, str]:
+        artists = t.get("artists") or []
+        artist_name = normalize_artist_name(artists[0]["name"]) if artists else ""
+        album = t.get("album") or {}
+        album_name = (album.get("name") or "").lower()
+        track_name = (t.get("name") or "").lower()
+        return (artist_name, album_name, track_name)
+
+    return sorted(tracks, key=sort_key, reverse=reverse), none_items
+
+
+def write_backup(
+    sp: spotipy.Spotify, playlist_id: str, items: list[dict], backup_dir: str
+) -> Path:
+    """Write a JSON backup of the playlist's current order. Raises OSError on failure."""
+    metadata = sp.playlist(playlist_id, fields="name,snapshot_id") or {}
+    now = datetime.now(timezone.utc)
+
+    backup_tracks = []
+    for position, item in enumerate(items):
+        track = item.get("track") or {}
+        album = track.get("album") or {}
+        backup_tracks.append({
+            "position": position,
+            "uri": track.get("uri"),
+            "name": track.get("name"),
+            "artists": [a.get("name") for a in (track.get("artists") or [])],
+            "album": album.get("name"),
+            "is_local": track.get("is_local"),
+            "type": track.get("type"),
+            "added_at": item.get("added_at"),
+        })
+
+    backup = {
+        "playlist_id": playlist_id,
+        "playlist_name": metadata.get("name"),
+        "snapshot_id": metadata.get("snapshot_id"),
+        "created_at": now.isoformat(),
+        "track_count": len(items),
+        "tracks": backup_tracks,
+    }
+
+    directory = Path(backup_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{playlist_id}-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(backup, f, indent=2, ensure_ascii=False)
+    return path
+
+
+def print_preview(sorted_tracks: list[dict]) -> None:
+    """Print the proposed playlist order."""
+    width = len(str(len(sorted_tracks)))
+    for position, t in enumerate(sorted_tracks, start=1):
+        artists = t.get("artists") or []
+        artist_name = artists[0]["name"] if artists else "(unknown artist)"
+        album_name = (t.get("album") or {}).get("name") or "(unknown album)"
+        print(f"{position:0{width}d}. {artist_name} — {album_name} — {t.get('name', '')}")
+
+
 def sort_playlist_by_artist(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
     playlist_id: str,
     reverse: bool = False,
-):
+    dry_run: bool = False,
+    backup: bool = True,
+    backup_dir: str = "backups",
+) -> bool:
+    """Sort a playlist by artist. Returns False if the operation failed."""
     scope = "playlist-read-private playlist-modify-private playlist-modify-public"
 
     cache_handler = CacheFileHandler(cache_path=".cache-spotify-playlist-sorter")
@@ -46,41 +144,46 @@ def sort_playlist_by_artist(
     )
 
     print(f"Fetching tracks for playlist {playlist_id}...")
-    tracks = []
-    results = sp.playlist_items(playlist_id, additional_types=["track"])
-    while True:
-        for item in results.get("items", []):
-            track = item.get("track")
-            if not track:
-                continue
-            tracks.append(track)
-        if results.get("next"):
-            results = sp.next(results)
-        else:
-            break
-
-    if not tracks:
+    items = fetch_playlist_items(sp, playlist_id)
+    if not items:
         print("No tracks found in playlist.")
-        return
+        return True
 
-    print(f"Found {len(tracks)} tracks. Sorting by artist, then album...")
+    sorted_tracks, none_items = build_sorted_tracks(items, reverse=reverse)
+    if not sorted_tracks:
+        print("No tracks found in playlist.")
+        return True
 
-    indexed_tracks = []
-    for idx, t in enumerate(tracks):
-        artists = t.get("artists") or []
-        artist_name = normalize_artist_name(artists[0]["name"]) if artists else ""
-        album = t.get("album") or {}
-        album_name = album.get("name", "").lower()
-        track_name = t.get("name", "")
-        uri = t["uri"]
-        indexed_tracks.append((idx, artist_name, album_name, track_name, uri))
+    print(f"Found {len(sorted_tracks)} tracks. Sorting by artist, then album...")
 
-    indexed_tracks.sort(key=lambda x: (x[1], x[2], x[3].lower()), reverse=reverse)
-    sorted_uris = [t[4] for t in indexed_tracks]
-
-    if len(sorted_uris) != len(tracks):
+    if len(sorted_tracks) + len(none_items) != len(items):
         print("ERROR: Track count mismatch after sorting. Aborting.")
-        return
+        return False
+
+    local_count = sum(1 for t in sorted_tracks if t.get("is_local"))
+    episode_count = sum(1 for t in sorted_tracks if t.get("type") == "episode")
+    if local_count or episode_count:
+        print(
+            f"Warning: {local_count} local file(s) and {episode_count} episode(s) "
+            "found; Spotify may reject re-adding them."
+        )
+    if none_items:
+        print(f"Note: {len(none_items)} unavailable item(s) will be dropped.")
+
+    if dry_run:
+        print_preview(sorted_tracks)
+        print("Dry run: no changes made.")
+        return True
+
+    if backup:
+        try:
+            backup_path = write_backup(sp, playlist_id, items, backup_dir)
+        except OSError as e:
+            print(f"ERROR: Could not write backup ({e}). Aborting; playlist unchanged.")
+            return False
+        print(f"Backup saved to {backup_path}")
+
+    sorted_uris = [t["uri"] for t in sorted_tracks]
 
     print("Rewriting playlist order on Spotify...")
     chunk_size = 100
@@ -95,6 +198,7 @@ def sort_playlist_by_artist(
         offset += chunk_size
 
     print("Done! Playlist is now sorted by artist, then album.")
+    return True
 
 
 def main():
@@ -111,6 +215,21 @@ def main():
         "--reverse",
         action="store_true",
         help="Sort Z → A instead of A → Z.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the sorted order without modifying the playlist.",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip writing a JSON backup before modifying the playlist.",
+    )
+    parser.add_argument(
+        "--backup-dir",
+        default="backups",
+        help="Directory for JSON backups (default: backups).",
     )
     parser.add_argument(
         "--client-id",
@@ -144,13 +263,18 @@ def main():
         )
         sys.exit(1)
 
-    sort_playlist_by_artist(
+    success = sort_playlist_by_artist(
         client_id=client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         playlist_id=args.playlist_id,
         reverse=args.reverse,
+        dry_run=args.dry_run,
+        backup=not args.no_backup,
+        backup_dir=args.backup_dir,
     )
+    if success is False:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

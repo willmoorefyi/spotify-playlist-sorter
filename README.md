@@ -68,6 +68,9 @@ sort-playlist --playlist-id <PLAYLIST_ID>
 
 # Sort in reverse order (Z-A)
 sort-playlist --playlist-id <PLAYLIST_ID> --reverse
+
+# Preview the sorted order without changing anything
+sort-playlist --playlist-id <PLAYLIST_ID> --dry-run
 ```
 
 ### Finding Your Playlist ID
@@ -85,6 +88,9 @@ https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
 ```
 --playlist-id   (required)  Spotify playlist ID
 --reverse                   Sort Z-A instead of A-Z
+--dry-run                   Preview the sorted order; make no changes
+--no-backup                 Skip the JSON backup before modifying
+--backup-dir PATH           Where to write backups (default: backups)
 --client-id                 Override SPOTIPY_CLIENT_ID env var
 --client-secret             Override SPOTIPY_CLIENT_SECRET env var
 --redirect-uri              Override SPOTIPY_REDIRECT_URI env var
@@ -99,6 +105,9 @@ sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M
 # Sort in reverse alphabetical order
 sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M --reverse
 
+# Back up to a custom directory
+sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M --backup-dir ~/spotify-backups
+
 # Provide credentials via command line
 sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M \
   --client-id YOUR_ID \
@@ -110,7 +119,12 @@ sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M \
 1. **Authentication**: On first run, the app opens your browser for Spotify OAuth authentication. Your access token is cached locally.
 2. **Fetch Tracks**: The app retrieves all tracks from your playlist using pagination.
 3. **Sort**: Tracks are sorted alphabetically by artist name, then by album name, then by track name.
-4. **Update**: The playlist is updated on Spotify in chunks of 100 tracks (API limit).
+4. **Backup**: Before changing anything, the current order is saved to `backups/<playlist_id>-<UTC timestamp>.json` (playlist name, snapshot ID, and every item with URI, artists, album, and date added). If the backup can't be written, the playlist is left untouched and the command exits with code 1.
+5. **Update**: The playlist is updated on Spotify in chunks of 100 tracks (API limit).
+
+With `--dry-run`, steps 4–5 are skipped and a numbered preview (`Artist — Album — Track`) is printed instead.
+
+**Note**: Unavailable tracks are dropped when the playlist is rewritten, and re-adding resets each track's "date added". Local files and podcast episodes are kept but Spotify may reject re-adding them; the tool warns when it finds any. Keep the backup until you've checked the result.
 
 ## Sorting Logic
 

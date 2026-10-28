@@ -48,20 +48,25 @@ tests/
 
 ### Key Functions
 
+#### Helpers
+- `fetch_playlist_items()`: paginated fetch of raw playlist items (including unavailable ones)
+- `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; the sort key lives in its inner `sort_key()`
+- `write_backup()`: writes the JSON backup of the original order; raises `OSError` on failure
+- `print_preview()`: numbered dry-run output
+
 #### `sort_playlist_by_artist()`
-- **Location**: `cli.py:11-78`
-- **Purpose**: Main sorting logic
+- **Purpose**: Orchestrates the sort; returns `False` on failure
 - **Steps**:
   1. Authenticate with Spotify OAuth
-  2. Fetch all tracks via pagination
-  3. Extract artist/track names and URIs
-  4. Sort alphabetically by artist (then track name)
-  5. Update playlist in 100-track chunks
+  2. Fetch all items, sort by artist → album → track name
+  3. Warn about local files / episodes; note unavailable items that will be dropped
+  4. `--dry-run`: print preview and stop
+  5. Write JSON backup (abort if it fails) unless `--no-backup`
+  6. Update playlist in 100-track chunks
 
 #### `main()`
-- **Location**: `cli.py:81-138`
 - **Purpose**: CLI entry point
-- **Handles**: Argument parsing, credential validation, function invocation
+- **Handles**: Argument parsing, credential validation, function invocation, exit code 1 on failure
 
 ### API Considerations
 - **Spotify Playlist API Limits**:
@@ -76,15 +81,17 @@ tests/
 
 1. **Single Artist Sorting**: Only uses the first artist for multi-artist tracks
 2. **Artist-Only Sorting**: Cannot sort by album, release date, or other metadata
-3. **No Backup**: Doesn't create a backup before modifying playlists
+3. **No Restore**: Backups are written as JSON but there's no restore command yet
 4. **Browser Required**: OAuth flow requires browser access (no headless mode)
-5. **No Dry Run**: Cannot preview changes before applying
+5. **Non-atomic Rewrite**: A local-file URI in a later chunk can fail after the replace call has truncated the playlist; restore from backup
+6. **Date Added Reset**: Rewriting the playlist resets each track's "date added"
 
 ## Future Enhancements
 
 ### High Priority
-- [ ] Add dry-run mode to preview changes before applying
-- [ ] Playlist backup/restore functionality
+- [x] Add dry-run mode to preview changes before applying
+- [x] Playlist backup (JSON)
+- [ ] Playlist restore from backup
 - [ ] Support for additional sort options:
   - [ ] By album name
   - [ ] By release date
@@ -149,7 +156,7 @@ tests/
 
 1. Add argument to parser in `main()`
 2. Pass argument to `sort_playlist_by_artist()`
-3. Modify sorting logic in the lambda function (line 59)
+3. Modify `sort_key()` inside `build_sorted_tracks()`
 4. Update README.md with new option
 5. Add tests for new sort behavior
 
@@ -177,6 +184,12 @@ poetry run pytest -v
 ```
 
 ## Changelog
+
+### 2026-10-28
+- Added `--dry-run` preview mode
+- Added automatic JSON backup before modifying playlists (`--no-backup`, `--backup-dir`)
+- Refactored `cli.py` into helpers; `main()` exits 1 on failure
+- Warn about local files/episodes and unavailable items
 
 ### 2025-12-11
 - Created comprehensive README.md

@@ -1,7 +1,17 @@
+import json
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from spotify_playlist_sorter.cli import sort_playlist_by_artist, main, normalize_artist_name
 import sys
+
+
+PLAYLIST_METADATA = {"name": "My Playlist", "snapshot_id": "snap_1"}
+
+
+@pytest.fixture(autouse=True)
+def run_in_tmp_path(tmp_path, monkeypatch):
+    """Run every test in a temp dir so backups never land in the repo."""
+    monkeypatch.chdir(tmp_path)
 
 
 class TestNormalizeArtistName:
@@ -43,6 +53,7 @@ class TestSortPlaylistByArtist:
         # Setup mock
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # Mock playlist items response
         mock_sp.playlist_items.return_value = {
@@ -68,6 +79,7 @@ class TestSortPlaylistByArtist:
         """Test reverse sorting (Z to A)."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         mock_sp.playlist_items.return_value = {
             "items": [
@@ -90,6 +102,7 @@ class TestSortPlaylistByArtist:
         """Test handling of empty playlist."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         mock_sp.playlist_items.return_value = {"items": [], "next": None}
 
@@ -104,6 +117,7 @@ class TestSortPlaylistByArtist:
         """Test handling of paginated results."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # First page
         first_page = {
@@ -140,6 +154,7 @@ class TestSortPlaylistByArtist:
         """Test that large playlists are updated in chunks of 100."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # Create 250 tracks
         tracks = []
@@ -168,6 +183,7 @@ class TestSortPlaylistByArtist:
         """Test handling of tracks with no artists."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         mock_sp.playlist_items.return_value = {
             "items": [
@@ -189,6 +205,7 @@ class TestSortPlaylistByArtist:
         """Test that tracks by same artist and album are sorted by track name."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         mock_sp.playlist_items.return_value = {
             "items": [
@@ -212,6 +229,7 @@ class TestSortPlaylistByArtist:
         """Test that tracks by the same artist are grouped by album."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # Same artist, multiple albums - should be grouped by album
         mock_sp.playlist_items.return_value = {
@@ -245,6 +263,7 @@ class TestSortPlaylistByArtist:
         """Test the complete sort hierarchy: artist -> album -> track."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # Multiple artists, albums, and tracks to test the full sort
         mock_sp.playlist_items.return_value = {
@@ -275,6 +294,7 @@ class TestSortPlaylistByArtist:
         """Test that 'The' is ignored when sorting artist names."""
         mock_sp = Mock()
         mock_spotify_class.return_value = mock_sp
+        mock_sp.playlist.return_value = PLAYLIST_METADATA
 
         # The Crystal Method should sort under 'C' between Crosby and Daft Punk
         mock_sp.playlist_items.return_value = {
@@ -301,6 +321,167 @@ class TestSortPlaylistByArtist:
                 "spotify:track:daft"        # Daft Punk
             ]
         )
+
+
+def make_mock_sp(mock_spotify_class, items):
+    mock_sp = Mock()
+    mock_spotify_class.return_value = mock_sp
+    mock_sp.playlist.return_value = PLAYLIST_METADATA
+    mock_sp.playlist_items.return_value = {"items": items, "next": None}
+    return mock_sp
+
+
+UNSORTED_ITEMS = [
+    {"added_at": "2025-01-02T00:00:00Z", "track": {"artists": [{"name": "Zebra"}], "name": "Song Z", "uri": "spotify:track:z", "album": {"name": "Album Z"}, "is_local": False, "type": "track"}},
+    {"added_at": "2025-01-01T00:00:00Z", "track": None},
+    {"added_at": "2025-01-03T00:00:00Z", "track": {"artists": [{"name": "Alpha"}], "name": "Song A", "uri": "spotify:track:a", "album": {"name": "Album A"}, "is_local": False, "type": "track"}},
+]
+
+
+class TestDryRun:
+    """Tests for --dry-run behavior."""
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_dry_run_makes_no_changes(self, mock_spotify_class, tmp_path):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True) is True
+
+        mock_sp.playlist_replace_items.assert_not_called()
+        mock_sp.playlist_add_items.assert_not_called()
+        assert not (tmp_path / "backups").exists()
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_dry_run_prints_preview_in_sorted_order(self, mock_spotify_class, capsys):
+        make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        out = capsys.readouterr().out
+        assert "1. Alpha — Album A — Song A" in out
+        assert "2. Zebra — Album Z — Song Z" in out
+        assert out.index("Alpha") < out.index("Zebra")
+        assert "Note: 1 unavailable item(s) will be dropped." in out
+        assert "Dry run: no changes made." in out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_preview_numbering_is_padded(self, mock_spotify_class, capsys):
+        items = [
+            {"track": {"artists": [{"name": f"Artist{i:02d}"}], "name": f"Song {i}", "uri": f"spotify:track:{i}", "album": {"name": "A"}}}
+            for i in range(10)
+        ]
+        make_mock_sp(mock_spotify_class, items)
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        out = capsys.readouterr().out
+        assert "01. Artist00" in out
+        assert "10. Artist09" in out
+
+
+class TestBackup:
+    """Tests for JSON backup behavior."""
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_backup_written_before_replace(self, mock_spotify_class, tmp_path):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        def assert_backup_exists(*args, **kwargs):
+            assert len(list((tmp_path / "backups").glob("playlist_123-*.json"))) == 1
+
+        mock_sp.playlist_replace_items.side_effect = assert_backup_exists
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is True
+        mock_sp.playlist_replace_items.assert_called_once()
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_backup_contents(self, mock_spotify_class, tmp_path, capsys):
+        make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        [backup_file] = (tmp_path / "backups").glob("playlist_123-*.json")
+        assert f"Backup saved to {backup_file.relative_to(tmp_path)}" in capsys.readouterr().out
+        data = json.loads(backup_file.read_text(encoding="utf-8"))
+        assert data["playlist_id"] == "playlist_123"
+        assert data["playlist_name"] == "My Playlist"
+        assert data["snapshot_id"] == "snap_1"
+        assert data["track_count"] == 3
+        assert data["created_at"].endswith("+00:00")
+        # Original order preserved, including the unavailable item
+        assert [t["uri"] for t in data["tracks"]] == ["spotify:track:z", None, "spotify:track:a"]
+        assert [t["position"] for t in data["tracks"]] == [0, 1, 2]
+        assert data["tracks"][0] == {
+            "position": 0,
+            "uri": "spotify:track:z",
+            "name": "Song Z",
+            "artists": ["Zebra"],
+            "album": "Album Z",
+            "is_local": False,
+            "type": "track",
+            "added_at": "2025-01-02T00:00:00Z",
+        }
+        assert data["tracks"][1]["added_at"] == "2025-01-01T00:00:00Z"
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_backup_failure_aborts(self, mock_spotify_class, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        with patch("spotify_playlist_sorter.cli.open", create=True, side_effect=OSError("disk full")):
+            result = sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        assert result is False
+        mock_sp.playlist_replace_items.assert_not_called()
+        mock_sp.playlist_add_items.assert_not_called()
+        assert "ERROR: Could not write backup" in capsys.readouterr().out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_no_backup(self, mock_spotify_class, tmp_path):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", backup=False)
+
+        assert not (tmp_path / "backups").exists()
+        mock_sp.playlist_replace_items.assert_called_once()
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_custom_backup_dir(self, mock_spotify_class, tmp_path):
+        make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", backup_dir="nested/dir")
+
+        assert len(list((tmp_path / "nested" / "dir").glob("playlist_123-*.json"))) == 1
+        assert not (tmp_path / "backups").exists()
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_no_backup_when_only_unavailable_items(self, mock_spotify_class, tmp_path, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, [{"track": None}])
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is True
+
+        assert "No tracks found in playlist" in capsys.readouterr().out
+        assert not (tmp_path / "backups").exists()
+        mock_sp.playlist_replace_items.assert_not_called()
+
+
+class TestLocalAndEpisodeItems:
+    """Local files and episodes are kept in the sort, with a warning."""
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_local_track_is_kept_and_warned(self, mock_spotify_class, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            {"track": {"artists": [{"name": "Zebra"}], "name": "Song Z", "uri": "spotify:track:z", "album": {"name": "Album Z"}, "is_local": False, "type": "track"}},
+            {"track": {"artists": [{"name": "Me"}], "name": "Demo", "uri": "spotify:local:Me:Demo:Demo:120", "album": {"name": "Demos"}, "is_local": True, "type": "track"}},
+            {"track": {"artists": [{"name": "Pod"}], "name": "Ep 1", "uri": "spotify:episode:e1", "album": {"name": "Show"}, "is_local": False, "type": "episode"}},
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with(
+            "playlist_123",
+            ["spotify:local:Me:Demo:Demo:120", "spotify:episode:e1", "spotify:track:z"],
+        )
+        assert "Warning: 1 local file(s) and 1 episode(s) found" in capsys.readouterr().out
 
 
 class TestMain:
@@ -340,7 +521,10 @@ class TestMain:
             client_secret="env_client_secret",
             redirect_uri="env_redirect_uri",
             playlist_id="test_playlist",
-            reverse=False
+            reverse=False,
+            dry_run=False,
+            backup=True,
+            backup_dir="backups",
         )
 
     @patch("spotify_playlist_sorter.cli.sort_playlist_by_artist")
@@ -363,7 +547,10 @@ class TestMain:
             client_secret="arg_client_secret",
             redirect_uri="arg_redirect_uri",
             playlist_id="test_playlist",
-            reverse=False
+            reverse=False,
+            dry_run=False,
+            backup=True,
+            backup_dir="backups",
         )
 
     @patch("spotify_playlist_sorter.cli.sort_playlist_by_artist")
@@ -381,3 +568,37 @@ class TestMain:
             main()
 
         assert mock_sort.call_args[1]["reverse"] is True
+
+    @patch("spotify_playlist_sorter.cli.sort_playlist_by_artist")
+    @patch("os.getenv")
+    def test_dry_run_and_backup_flags(self, mock_getenv, mock_sort):
+        """Test that --dry-run, --no-backup, and --backup-dir are passed correctly."""
+        mock_getenv.side_effect = lambda key: {
+            "SPOTIPY_CLIENT_ID": "id",
+            "SPOTIPY_CLIENT_SECRET": "secret"
+        }.get(key)
+
+        test_args = ["prog", "--playlist-id", "p", "--dry-run", "--no-backup", "--backup-dir", "/tmp/bk"]
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+        kwargs = mock_sort.call_args[1]
+        assert kwargs["dry_run"] is True
+        assert kwargs["backup"] is False
+        assert kwargs["backup_dir"] == "/tmp/bk"
+
+    @patch("spotify_playlist_sorter.cli.sort_playlist_by_artist", return_value=False)
+    @patch("os.getenv")
+    def test_exits_nonzero_on_failure(self, mock_getenv, mock_sort):
+        """Test that main exits with code 1 when sorting fails (e.g. backup error)."""
+        mock_getenv.side_effect = lambda key: {
+            "SPOTIPY_CLIENT_ID": "id",
+            "SPOTIPY_CLIENT_SECRET": "secret"
+        }.get(key)
+
+        with patch.object(sys, "argv", ["prog", "--playlist-id", "p"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+        assert exc_info.value.code == 1
