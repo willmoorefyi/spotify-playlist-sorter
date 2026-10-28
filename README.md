@@ -124,6 +124,15 @@ sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M \
 
 With `--dry-run`, steps 4–5 are skipped and a numbered preview (`Artist — Album — Track`) is printed instead.
 
+**Possible duplicates**: In both dry runs and real runs, songs with the same artist and title (ignoring case, extra spaces, and a leading "The" in the artist name) are listed as a warning after the track list, with each copy's position and album. They are never removed. They may be genuine duplicates or the same song on an album and a compilation, so review them yourself:
+
+```
+Warning: 1 possible duplicate song(s) found (same artist and title; may be album vs. compilation versions):
+  Radiohead — Creep
+    03. Pablo Honey (1993)
+    17. The Best Of (2008)
+```
+
 **Note**: Unavailable tracks are dropped when the playlist is rewritten, and re-adding resets each track's "date added". Local files and podcast episodes are kept but Spotify may reject re-adding them; the tool warns when it finds any. Keep the backup until you've checked the result.
 
 ## Sorting Logic

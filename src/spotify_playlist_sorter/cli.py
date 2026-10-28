@@ -123,18 +123,58 @@ def write_backup(
     return path
 
 
+def format_artist(t: dict) -> str:
+    artists = t.get("artists") or []
+    return artists[0]["name"] if artists else "(unknown artist)"
+
+
+def format_album(t: dict) -> str:
+    album = t.get("album") or {}
+    album_name = album.get("name") or "(unknown album)"
+    year = (album.get("release_date") or "")[:4]
+    return f"{album_name} ({year})" if year else album_name
+
+
 def print_preview(sorted_tracks: list[dict]) -> None:
     """Print the proposed playlist order."""
     width = len(str(len(sorted_tracks)))
     for position, t in enumerate(sorted_tracks, start=1):
+        print(f"{position:0{width}d}. {format_artist(t)} — {format_album(t)} — {t.get('name', '')}")
+
+
+def find_possible_duplicates(sorted_tracks: list[dict]) -> list[list[tuple[int, dict]]]:
+    """
+    Group tracks with the same first artist and title (case-insensitive).
+
+    Returns groups of (1-based position, track) with more than one entry,
+    in order of first appearance.
+    """
+    groups: dict[tuple[str, str], list[tuple[int, dict]]] = {}
+    for position, t in enumerate(sorted_tracks, start=1):
         artists = t.get("artists") or []
-        artist_name = artists[0]["name"] if artists else "(unknown artist)"
-        album = t.get("album") or {}
-        album_name = album.get("name") or "(unknown album)"
-        year = (album.get("release_date") or "")[:4]
-        if year:
-            album_name = f"{album_name} ({year})"
-        print(f"{position:0{width}d}. {artist_name} — {album_name} — {t.get('name', '')}")
+        artist_name = normalize_artist_name(artists[0]["name"]).strip() if artists else ""
+        title = " ".join((t.get("name") or "").lower().split())
+        if not title:
+            continue
+        groups.setdefault((artist_name, title), []).append((position, t))
+    return [group for group in groups.values() if len(group) > 1]
+
+
+def print_duplicate_warning(sorted_tracks: list[dict]) -> None:
+    """Warn about possible duplicate songs (same artist and title)."""
+    duplicates = find_possible_duplicates(sorted_tracks)
+    if not duplicates:
+        return
+    width = len(str(len(sorted_tracks)))
+    print(
+        f"\nWarning: {len(duplicates)} possible duplicate song(s) found "
+        "(same artist and title; may be album vs. compilation versions):"
+    )
+    for group in duplicates:
+        _, first = group[0]
+        print(f"  {format_artist(first)} — {first.get('name', '')}")
+        for position, t in group:
+            print(f"    {position:0{width}d}. {format_album(t)}")
 
 
 def sort_playlist_by_artist(
@@ -191,6 +231,7 @@ def sort_playlist_by_artist(
 
     if dry_run:
         print_preview(sorted_tracks)
+        print_duplicate_warning(sorted_tracks)
         print("Dry run: no changes made.")
         return True
 
@@ -217,6 +258,7 @@ def sort_playlist_by_artist(
         offset += chunk_size
 
     print("Done! Playlist is now sorted by artist, then album release date.")
+    print_duplicate_warning(sorted_tracks)
     return True
 
 

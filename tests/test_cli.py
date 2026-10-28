@@ -447,6 +447,94 @@ class TestChronologicalAlbumSort:
         assert "1. Radiohead — OK Computer (1997) — Airbag" in capsys.readouterr().out
 
 
+class TestPossibleDuplicates:
+    """Possible duplicates (same artist + title) are warned about, never removed."""
+
+    @staticmethod
+    def _track(artist, album, release_date, name, uri, track_number=1):
+        return {"track": {
+            "artists": [{"name": artist}],
+            "name": name,
+            "uri": uri,
+            "track_number": track_number,
+            "album": {"name": album, "release_date": release_date, "id": album},
+        }}
+
+    def _items(self):
+        t = self._track
+        return [
+            t("Radiohead", "The Best Of", "2008-06-02", "Creep", "spotify:track:best_creep"),
+            t("Radiohead", "Pablo Honey", "1993-02-22", "Creep", "spotify:track:ph_creep", track_number=2),
+            t("Radiohead", "Pablo Honey", "1993-02-22", "You", "spotify:track:ph_you"),
+            t("Arcade Fire", "Funeral", "2004-09-14", "Wake Up", "spotify:track:af_wake"),
+        ]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_dry_run_lists_both_songs_after_track_list(self, mock_spotify_class, capsys):
+        make_mock_sp(mock_spotify_class, self._items())
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        out = capsys.readouterr().out
+        assert "Warning: 1 possible duplicate song(s) found" in out
+        assert "  Radiohead — Creep\n    3. Pablo Honey (1993)\n    4. The Best Of (2008)\n" in out
+        # Warning comes after the track list, before the dry-run footer
+        assert out.index("4. Radiohead — The Best Of (2008) — Creep") < out.index("possible duplicate")
+        assert out.index("possible duplicate") < out.index("Dry run: no changes made.")
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_real_run_warns_and_keeps_all_tracks(self, mock_spotify_class, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, self._items())
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123")
+
+        mock_sp.playlist_replace_items.assert_called_once_with("playlist_123", [
+            "spotify:track:af_wake", "spotify:track:ph_you", "spotify:track:ph_creep", "spotify:track:best_creep",
+        ])
+        out = capsys.readouterr().out
+        assert out.index("Done!") < out.index("possible duplicate")
+        assert "Radiohead — Creep" in out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_match_ignores_case_whitespace_and_leading_the(self, mock_spotify_class, capsys):
+        t = self._track
+        make_mock_sp(mock_spotify_class, [
+            t("The Beatles", "Help!", "1965", "Yesterday", "spotify:track:1"),
+            t("Beatles", "1", "2000", "  yesterday ", "spotify:track:2"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        assert "Warning: 1 possible duplicate song(s) found" in capsys.readouterr().out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_same_title_different_artist_not_flagged(self, mock_spotify_class, capsys):
+        t = self._track
+        make_mock_sp(mock_spotify_class, [
+            t("Johnny Cash", "American IV", "2002", "Hurt", "spotify:track:cash"),
+            t("Nine Inch Nails", "The Downward Spiral", "1994", "Hurt", "spotify:track:nin"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        assert "possible duplicate" not in capsys.readouterr().out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_three_copies_listed_in_one_group(self, mock_spotify_class, capsys):
+        t = self._track
+        make_mock_sp(mock_spotify_class, [
+            t("A", "X", "2000", "Song", "spotify:track:1"),
+            t("A", "Y", "2001", "Song", "spotify:track:2"),
+            t("A", "X", "2000", "Song", "spotify:track:1"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        out = capsys.readouterr().out
+        assert "Warning: 1 possible duplicate song(s) found" in out
+        assert "    1. X (2000)\n    2. X (2000)\n    3. Y (2001)\n" in out
+
+
 class TestDryRun:
     """Tests for --dry-run behavior."""
 

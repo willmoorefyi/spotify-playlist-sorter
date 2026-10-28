@@ -53,6 +53,7 @@ tests/
 - `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; two stable passes: `album_key()` (release date → album → disc → track number), then `artist_key()` (with `reverse`)
 - `write_backup()`: writes the JSON backup of the original order; raises `OSError` on failure
 - `print_preview()`: numbered dry-run output
+- `find_possible_duplicates()` / `print_duplicate_warning()`: groups tracks by normalized first artist + title; warning only, never removes
 
 #### `sort_playlist_by_artist()`
 - **Purpose**: Orchestrates the sort; returns `False` on failure
@@ -60,9 +61,9 @@ tests/
   1. Authenticate with Spotify OAuth
   2. Fetch all items, sort by artist → album release date → album track order
   3. Warn about local files / episodes; note unavailable items that will be dropped
-  4. `--dry-run`: print preview and stop
+  4. `--dry-run`: print preview, duplicate warning, and stop
   5. Write JSON backup (abort if it fails) unless `--no-backup`
-  6. Update playlist in 100-track chunks
+  6. Update playlist in 100-track chunks, then print duplicate warning
 
 #### `main()`
 - **Purpose**: CLI entry point
@@ -191,6 +192,7 @@ poetry run pytest -v
 - Refactored `cli.py` into helpers; `main()` exits 1 on failure
 - Albums now sort chronologically within an artist, tracks in album order; `--reverse` flips artists only
 - Dry-run preview shows album release year
+- Warn about possible duplicate songs (same artist + title) after the track list, in dry and real runs
 - Warn about local files/episodes and unavailable items
 
 ### 2025-12-11
