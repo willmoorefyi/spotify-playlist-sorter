@@ -28,7 +28,7 @@ A Python CLI tool that sorts Spotify playlists alphabetically by artist name usi
 - ✅ Test suite with unit tests
 
 ### Current Features
-- Sort by first artist name, then album release date, then album track order
+- Sort by first album artist (album name for "Various Artists" albums), then album release date, then album track order
 - Command-line interface with argparse
 - Environment variable configuration via .env
 - Error handling for missing credentials and empty playlists
@@ -50,9 +50,10 @@ tests/
 
 #### Helpers
 - `fetch_playlist_items()`: paginated fetch of raw playlist items (including unavailable ones)
-- `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; two stable passes: `album_key()` (release date → album → disc → track number), then `artist_key()` (with `reverse`)
+- `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; two stable passes: `album_key()` (release date → album → disc → track number), then `primary_sort_key()` (with `reverse`)
 - `entry_media()`: a playlist entry's track/episode, preferring `item` over the deprecated `track`
 - `spotify_error_detail()` / `is_definite_rejection()`: error text without spotipy's URL prefix; whether a `SpotifyException` means the write definitely wasn't applied (4xx except 429)
+- `primary_sort_key()` / `is_various_artists_album()`: first album artist (fallback: first track artist); album name when the first album artist is "Various Artists" (`VARIOUS_ARTISTS_ID`, or name match)
 - `write_backup()`: writes the JSON backup of the original order; raises `OSError` on failure
 - `print_preview()`: numbered dry-run output
 - `find_possible_duplicates()` / `print_duplicate_warning()`: groups tracks by normalized first artist + title; warning only, never removes
@@ -82,7 +83,7 @@ tests/
 
 ## Known Limitations
 
-1. **Single Artist Sorting**: Only uses the first artist for multi-artist tracks
+1. **Single Artist Sorting**: Only uses the first album artist (or first track artist when there's no album artist)
 2. **Fixed Sort Order**: Artist → album release date → track order is hard-coded; no alternative sort modes
 3. **No Restore**: Backups are written as JSON but there's no restore command yet
 4. **Browser Required**: OAuth flow requires browser access (no headless mode)
@@ -159,7 +160,7 @@ tests/
 
 1. Add argument to parser in `main()`
 2. Pass argument to `sort_playlist_by_artist()`
-3. Modify `artist_key()` / `album_key()` inside `build_sorted_tracks()`
+3. Modify `primary_sort_key()` / `album_key()` used by `build_sorted_tracks()`
 4. Update README.md with new option
 5. Add tests for new sort behavior
 
@@ -189,6 +190,7 @@ poetry run pytest -v
 ## Changelog
 
 ### 2026-10-28
+- Sort by album artist instead of track artist so cast albums stay together; "Various Artists" albums sort by album name; dry-run preview marks those tracks
 - Upgraded spotipy to 2.26.0: Spotify migrated playlist endpoints from `/tracks` to `/items` (Feb 2026 Dev Mode changes); 2.25.2 still used `/tracks`
 - Read entries' `item` field (falls back to deprecated `track`)
 - Clear errors instead of tracebacks when Spotify rejects a read or write, stating whether the playlist is unchanged, may have been modified, or is partially rewritten

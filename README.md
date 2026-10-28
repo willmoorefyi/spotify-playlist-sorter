@@ -118,11 +118,11 @@ sort-playlist --playlist-id 37i9dQZF1DXcBWIGoYBM5M \
 
 1. **Authentication**: On first run, the app opens your browser for Spotify OAuth authentication. Your access token is cached locally.
 2. **Fetch Tracks**: The app retrieves all tracks from your playlist using pagination.
-3. **Sort**: Tracks are sorted alphabetically by artist name, then chronologically by album release date, then in album track order.
+3. **Sort**: Tracks are sorted alphabetically by album artist (or by album name for "Various Artists" albums), then chronologically by album release date, then in album track order.
 4. **Backup**: Before changing anything, the current order is saved to `backups/<playlist_id>-<UTC timestamp>.json` (playlist name, snapshot ID, and every item with URI, artists, album, and date added). If the backup can't be written, the playlist is left untouched and the command exits with code 1.
 5. **Update**: The playlist is updated on Spotify in chunks of 100 tracks (API limit).
 
-With `--dry-run`, steps 4–5 are skipped and a numbered preview (`Artist — Album — Track`) is printed instead.
+With `--dry-run`, steps 4–5 are skipped and a numbered preview (`Artist — Album — Track`) is printed instead. The preview shows each track's own artist, so tracks filed under an album artist (e.g. Hamilton's cast under Lin-Manuel Miranda) can look out of alphabetical order. Tracks from "Various Artists" albums are prefixed with the album name they're sorted under: `Album [Various Artists] — Artist — Album — Track`.
 
 **Possible duplicates**: In both dry runs and real runs, songs with the same artist and title (ignoring case, extra spaces, and a leading "The" in the artist name) are listed as a warning after the track list, with each copy's position and album. They are never removed. They may be genuine duplicates or the same song on an album and a compilation, so review them yourself:
 
@@ -137,11 +137,12 @@ Warning: 1 possible duplicate song(s) found (same artist and title; may be album
 
 ## Sorting Logic
 
-- Primary sort: First artist's name (case-insensitive, ignoring leading "the")
+- Primary sort: The album's first artist (case-insensitive, ignoring leading "the"), so a whole album stays together under the artist responsible for it — e.g. *Hamilton (Original Broadway Cast Recording)* sorts under Lin-Manuel Miranda even though each song credits its singers
+- Exception: when the album artist is "Various Artists" (most film soundtracks and compilations), the album name is the primary key instead — e.g. *The Lion King (Original Motion Picture Soundtrack)* sorts under "L"
 - Secondary sort: Album release date, oldest first (undated albums go last; same-date albums are ordered by name)
 - Tertiary sort: Position on the album (disc number, then track number)
-- `--reverse` flips the artist order only; albums stay chronological and tracks stay in album order
-- For tracks with multiple artists, only the first artist is used for sorting
+- `--reverse` flips the primary (artist / album name) order only; albums stay chronological and tracks stay in album order
+- Only the first album artist is used; if a track has no album artist (e.g. local files), its first track artist is used
 - Artist names starting with "The" are sorted by the word following "The" (e.g., "The Beatles" sorts under "B")
 
 ## Development

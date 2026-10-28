@@ -12,6 +12,8 @@ from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
 
 load_dotenv()  # loads .env into environment variables
 
+VARIOUS_ARTISTS_ID = "0LyfQWJT6nXafLPZqxe9Of"  # Spotify's shared "Various Artists" artist
+
 
 def normalize_artist_name(name: str) -> str:
     """
@@ -60,15 +62,46 @@ def is_definite_rejection(e: SpotifyException) -> bool:
     return 400 <= e.http_status < 500 and e.http_status != 429
 
 
+def is_various_artists_album(t: dict) -> bool:
+    """
+    True if the track's first album artist is "Various Artists". Only album
+    artists are checked; the name match covers entries without an id.
+    """
+    album_artists = (t.get("album") or {}).get("artists") or []
+    if not album_artists:
+        return False
+    first = album_artists[0]
+    return (
+        first.get("id") == VARIOUS_ARTISTS_ID
+        or (first.get("name") or "").strip().lower() == "various artists"
+    )
+
+
+def primary_sort_key(t: dict) -> str:
+    """
+    Primary sort key: the album name for "Various Artists" albums, otherwise
+    the first album artist, falling back to the first track artist.
+    """
+    album = t.get("album") or {}
+    if is_various_artists_album(t):
+        return normalize_artist_name(album.get("name") or "")
+    album_artists = album.get("artists") or []
+    if album_artists:
+        return normalize_artist_name(album_artists[0].get("name") or "")
+    artists = t.get("artists") or []
+    return normalize_artist_name(artists[0]["name"]) if artists else ""
+
+
 def build_sorted_tracks(
     items: list[dict], reverse: bool = False
 ) -> tuple[list[dict], list[dict]]:
     """
-    Sort playlist items by artist (alphabetical), then album (chronological),
-    then position within the album (disc, track number).
+    Sort playlist items by album artist (alphabetical; album name for
+    "Various Artists" albums), then album (chronological), then position
+    within the album (disc, track number).
 
-    `reverse` flips only the artist order; albums stay oldest-first and
-    tracks stay in album order.
+    `reverse` flips only the primary (album artist / album name) order;
+    albums stay oldest-first and tracks stay in album order.
 
     Returns (sorted_tracks, none_items) where none_items are items whose
     track is unavailable (None) and cannot be re-added.
@@ -81,10 +114,6 @@ def build_sorted_tracks(
             none_items.append(entry)
             continue
         tracks.append(track)
-
-    def artist_key(t: dict) -> str:
-        artists = t.get("artists") or []
-        return normalize_artist_name(artists[0]["name"]) if artists else ""
 
     def album_key(t: dict) -> tuple[str, str, str, int, int, str]:
         album = t.get("album") or {}
@@ -100,7 +129,7 @@ def build_sorted_tracks(
 
     # Two stable passes so `reverse` applies to artists only.
     tracks.sort(key=album_key)
-    tracks.sort(key=artist_key, reverse=reverse)
+    tracks.sort(key=primary_sort_key, reverse=reverse)
     return tracks, none_items
 
 
@@ -159,7 +188,11 @@ def print_preview(sorted_tracks: list[dict]) -> None:
     """Print the proposed playlist order."""
     width = len(str(len(sorted_tracks)))
     for position, t in enumerate(sorted_tracks, start=1):
-        print(f"{position:0{width}d}. {format_artist(t)} — {format_album(t)} — {t.get('name', '')}")
+        # Show why a Various Artists track sits under its album name.
+        prefix = ""
+        if is_various_artists_album(t):
+            prefix = f"{(t.get('album') or {}).get('name') or '(unknown album)'} [Various Artists] — "
+        print(f"{position:0{width}d}. {prefix}{format_artist(t)} — {format_album(t)} — {t.get('name', '')}")
 
 
 def find_possible_duplicates(sorted_tracks: list[dict]) -> list[list[tuple[int, dict]]]:

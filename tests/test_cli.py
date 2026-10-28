@@ -793,6 +793,134 @@ class TestItemField:
         assert [t["uri"] for t in data["tracks"]] == ["spotify:track:z", "spotify:track:a"]
 
 
+VA = ("0LyfQWJT6nXafLPZqxe9Of", "Various Artists")
+LMM = ("lmm_id", "Lin-Manuel Miranda")
+LION_KING = "The Lion King (Original Motion Picture Soundtrack)"
+
+
+class TestAlbumArtistSort:
+    """Sort by first album artist; "Various Artists" albums sort by album name."""
+
+    @staticmethod
+    def _track(uri, track_artist, album_name, album_artists, track_number=1, release_date="2020", album_id=None, name=None):
+        album = {"name": album_name, "release_date": release_date, "id": album_id or album_name}
+        if album_artists is not None:
+            album["artists"] = [{"id": i, "name": n} if i else {"name": n} for i, n in album_artists]
+        return {"track": {
+            "artists": [{"name": track_artist}],
+            "name": name or uri,
+            "uri": uri,
+            "disc_number": 1,
+            "track_number": track_number,
+            "album": album,
+        }}
+
+    def _sorted_uris(self, mock_spotify_class, items, **kwargs):
+        mock_sp = make_mock_sp(mock_spotify_class, items)
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123", **kwargs) is True
+        return mock_sp.playlist_replace_items.call_args[0][1]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_cast_album_consolidates_under_album_artist(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("muse", "Muse", "Origin", [("muse_id", "Muse")]),
+            self._track("ham3", "Original Broadway Cast of Hamilton", "Hamilton", [LMM], track_number=3),
+            self._track("gaga", "Lady Gaga", "Chromatica", [("gaga_id", "Lady Gaga")]),
+            self._track("ham1", "Leslie Odom Jr.", "Hamilton", [LMM], track_number=1),
+            self._track("ham2", "Jonathan Groff", "Hamilton", [LMM], track_number=2),
+        ])
+        assert uris == ["gaga", "ham1", "ham2", "ham3", "muse"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_various_artists_album_sorts_by_album_name(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("muse", "Muse", "Origin", [("muse_id", "Muse")]),
+            self._track("lk2", "Elton John", LION_KING, [VA], track_number=2),
+            self._track("beyonce", "Beyoncé", "Lemonade", [("bey_id", "Beyoncé")]),
+            self._track("lk1", "Beyoncé", LION_KING, [VA], track_number=1),
+            self._track("gaga", "Lady Gaga", "Chromatica", [("gaga_id", "Lady Gaga")]),
+        ])
+        # "The Lion King ..." sorts as "lion king ...": after Lady Gaga, before Muse, not under B/E.
+        assert uris == ["beyonce", "gaga", "lk1", "lk2", "muse"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_various_artists_detected_by_name_without_id(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("zz", "Zed", "Alpha Soundtrack", [(None, "various artists")]),
+            self._track("bb", "Bee", "Bravo", [("bee_id", "Bee")]),
+        ])
+        assert uris == ["zz", "bb"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_various_artists_second_album_artist_uses_first(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("wicked", "Idina Menzel", "Wicked (Original Broadway Cast Recording)", [("ss_id", "Stephen Schwartz"), VA]),
+            self._track("taylor", "Taylor Swift", "1989", [("ts_id", "Taylor Swift")]),
+            self._track("adele", "Adele", "Wicked Album", [("adele_id", "Adele")]),
+        ])
+        assert uris == ["adele", "wicked", "taylor"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_missing_album_artists_falls_back_to_track_artist(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("zebra", "Zebra", "Album", None),
+            self._track("empty", "Alpha", "Album", []),
+            # Track artist "Various Artists" with no album artists is NOT a VA album.
+            self._track("va_local", "Various Artists", "Aardvark Mix", []),
+        ])
+        assert uris == ["empty", "va_local", "zebra"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_single_artist_compilation_uses_album_artist(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("phil", "Phil Collins", "Disney Summer Songs", [("disney_id", "Disney")]),
+            self._track("coldplay", "Coldplay", "Parachutes", [("cp_id", "Coldplay")]),
+            self._track("eagles", "Eagles", "Hotel California", [("eg_id", "Eagles")]),
+        ])
+        assert uris == ["coldplay", "phil", "eagles"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_reverse_flips_primary_key_keeps_album_order(self, mock_spotify_class):
+        uris = self._sorted_uris(mock_spotify_class, [
+            self._track("lk2", "Elton John", LION_KING, [VA], track_number=2, album_id="lk"),
+            self._track("gaga", "Lady Gaga", "Chromatica", [("gaga_id", "Lady Gaga")]),
+            self._track("lk1", "Beyoncé", LION_KING, [VA], track_number=1, album_id="lk"),
+            self._track("muse", "Muse", "Origin", [("muse_id", "Muse")]),
+            # Different album with the same name sorts by date, not interleaved.
+            self._track("lk_old", "Carmen Twillie", LION_KING, [VA], track_number=1, release_date="1994", album_id="lk94"),
+        ], reverse=True)
+        assert uris == ["muse", "lk_old", "lk1", "lk2", "gaga"]
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_preview_marks_various_artists_tracks(self, mock_spotify_class, capsys):
+        make_mock_sp(mock_spotify_class, [
+            self._track("lk1", "Beyoncé", LION_KING, [VA], release_date="2019", name="Spirit"),
+            self._track("ham", "Jonathan Groff", "Hamilton", [LMM], release_date="2015", name="You'll Be Back"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        lines = capsys.readouterr().out.splitlines()
+        assert "1. Jonathan Groff — Hamilton (2015) — You'll Be Back" in lines
+        assert (
+            "2. The Lion King (Original Motion Picture Soundtrack) [Various Artists] — Beyoncé — "
+            "The Lion King (Original Motion Picture Soundtrack) (2019) — Spirit"
+        ) in lines
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_duplicates_still_use_track_artist(self, mock_spotify_class, capsys):
+        make_mock_sp(mock_spotify_class, [
+            self._track("lk1", "Beyoncé", LION_KING, [VA], name="Spirit"),
+            self._track("bey", "Beyoncé", "Spirit (Single)", [("bey_id", "Beyoncé")], name="Spirit"),
+        ])
+
+        sort_playlist_by_artist("id", "secret", "uri", "playlist_123", dry_run=True)
+
+        out = capsys.readouterr().out
+        assert "1 possible duplicate song(s) found" in out
+        assert "  Beyoncé — Spirit" in out
+
+
 class TestMain:
     """Tests for the main CLI entry point."""
 
