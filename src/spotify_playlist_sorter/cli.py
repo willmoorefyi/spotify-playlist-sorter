@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import spotipy
+from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
 
 load_dotenv()  # loads .env into environment variables
@@ -40,6 +41,25 @@ def fetch_playlist_items(sp: spotipy.Spotify, playlist_id: str) -> list[dict]:
     return items
 
 
+def entry_media(entry: dict) -> dict | None:
+    """Return the track/episode of a playlist entry, preferring `item` over the deprecated `track`."""
+    return entry.get("item") or entry.get("track")
+
+
+def spotify_error_detail(e: SpotifyException) -> str:
+    """Spotify's error text without the request URL spotipy prefixes to `msg`."""
+    return (e.msg or "").split("\n", 1)[-1].strip()
+
+
+def is_definite_rejection(e: SpotifyException) -> bool:
+    """
+    True for 4xx errors other than 429, where Spotify refused the request
+    outright. spotipy retries 429/5xx, so after those the write may have been
+    applied anyway.
+    """
+    return 400 <= e.http_status < 500 and e.http_status != 429
+
+
 def build_sorted_tracks(
     items: list[dict], reverse: bool = False
 ) -> tuple[list[dict], list[dict]]:
@@ -55,10 +75,10 @@ def build_sorted_tracks(
     """
     tracks = []
     none_items = []
-    for item in items:
-        track = item.get("track")
+    for entry in items:
+        track = entry_media(entry)
         if not track:
-            none_items.append(item)
+            none_items.append(entry)
             continue
         tracks.append(track)
 
@@ -92,8 +112,8 @@ def write_backup(
     now = datetime.now(timezone.utc)
 
     backup_tracks = []
-    for position, item in enumerate(items):
-        track = item.get("track") or {}
+    for position, entry in enumerate(items):
+        track = entry_media(entry) or {}
         album = track.get("album") or {}
         backup_tracks.append({
             "position": position,
@@ -103,7 +123,7 @@ def write_backup(
             "album": album.get("name"),
             "is_local": track.get("is_local"),
             "type": track.get("type"),
-            "added_at": item.get("added_at"),
+            "added_at": entry.get("added_at"),
         })
 
     backup = {
@@ -203,7 +223,11 @@ def sort_playlist_by_artist(
     )
 
     print(f"Fetching tracks for playlist {playlist_id}...")
-    items = fetch_playlist_items(sp, playlist_id)
+    try:
+        items = fetch_playlist_items(sp, playlist_id)
+    except SpotifyException as e:
+        print(f"ERROR: Could not read playlist (HTTP {e.http_status}: {spotify_error_detail(e)}).")
+        return False
     if not items:
         print("No tracks found in playlist.")
         return True
@@ -235,11 +259,18 @@ def sort_playlist_by_artist(
         print("Dry run: no changes made.")
         return True
 
+    backup_path = None
     if backup:
         try:
             backup_path = write_backup(sp, playlist_id, items, backup_dir)
         except OSError as e:
             print(f"ERROR: Could not write backup ({e}). Aborting; playlist unchanged.")
+            return False
+        except SpotifyException as e:
+            print(
+                f"ERROR: Could not write backup (HTTP {e.http_status}: "
+                f"{spotify_error_detail(e)}). Aborting; playlist unchanged."
+            )
             return False
         print(f"Backup saved to {backup_path}")
 
@@ -248,13 +279,43 @@ def sort_playlist_by_artist(
     print("Rewriting playlist order on Spotify...")
     chunk_size = 100
 
+    restore_hint = (
+        f"Restore from backup: {backup_path}" if backup_path
+        else "No backup was written (--no-backup)."
+    )
+
     first_chunk = sorted_uris[:chunk_size]
-    sp.playlist_replace_items(playlist_id, first_chunk)
+    try:
+        sp.playlist_replace_items(playlist_id, first_chunk)
+    except SpotifyException as e:
+        print(f"ERROR: Spotify rejected the update (HTTP {e.http_status}: {spotify_error_detail(e)}).")
+        if is_definite_rejection(e):
+            print("Playlist unchanged.")
+            if e.http_status in (403, 404):
+                print("Your account may not have permission to edit this playlist.")
+            if backup_path:
+                print(f"Backup: {backup_path}")
+        else:
+            print("The playlist may have been modified; check it on Spotify.")
+            print(restore_hint)
+        return False
 
     offset = chunk_size
     while offset < len(sorted_uris):
         chunk = sorted_uris[offset : offset + chunk_size]
-        sp.playlist_add_items(playlist_id, chunk)
+        try:
+            sp.playlist_add_items(playlist_id, chunk)
+        except SpotifyException as e:
+            print(
+                f"ERROR: Spotify rejected the update at track {offset + 1} of {len(sorted_uris)} "
+                f"(HTTP {e.http_status}: {spotify_error_detail(e)})."
+            )
+            print(
+                f"The playlist is only partially rewritten (at least {offset} of "
+                f"{len(sorted_uris)} tracks)."
+            )
+            print(restore_hint)
+            return False
         offset += chunk_size
 
     print("Done! Playlist is now sorted by artist, then album release date.")

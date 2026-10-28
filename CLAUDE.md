@@ -11,7 +11,7 @@ A Python CLI tool that sorts Spotify playlists alphabetically by artist name usi
 - **Language**: Python 3.12+
 - **Package Manager**: Poetry
 - **Key Libraries**:
-  - spotipy (Spotify API wrapper)
+  - spotipy >= 2.26.0 (Spotify API wrapper; uses the `/playlists/{id}/items` endpoints)
   - python-dotenv (environment configuration)
 - **Authentication**: OAuth 2.0 with browser-based flow
 
@@ -51,6 +51,8 @@ tests/
 #### Helpers
 - `fetch_playlist_items()`: paginated fetch of raw playlist items (including unavailable ones)
 - `build_sorted_tracks()`: returns `(sorted_tracks, none_items)`; two stable passes: `album_key()` (release date → album → disc → track number), then `artist_key()` (with `reverse`)
+- `entry_media()`: a playlist entry's track/episode, preferring `item` over the deprecated `track`
+- `spotify_error_detail()` / `is_definite_rejection()`: error text without spotipy's URL prefix; whether a `SpotifyException` means the write definitely wasn't applied (4xx except 429)
 - `write_backup()`: writes the JSON backup of the original order; raises `OSError` on failure
 - `print_preview()`: numbered dry-run output
 - `find_possible_duplicates()` / `print_duplicate_warning()`: groups tracks by normalized first artist + title; warning only, never removes
@@ -59,11 +61,11 @@ tests/
 - **Purpose**: Orchestrates the sort; returns `False` on failure
 - **Steps**:
   1. Authenticate with Spotify OAuth
-  2. Fetch all items, sort by artist → album release date → album track order
+  2. Fetch all items (clear error on `SpotifyException`), sort by artist → album release date → album track order
   3. Warn about local files / episodes; note unavailable items that will be dropped
   4. `--dry-run`: print preview, duplicate warning, and stop
   5. Write JSON backup (abort if it fails) unless `--no-backup`
-  6. Update playlist in 100-track chunks, then print duplicate warning
+  6. Update playlist in 100-track chunks, then print duplicate warning. A `SpotifyException` on the first write reports "unchanged" (4xx) or "may have been modified" (429/5xx after spotipy's retries); on a later chunk it reports a partial rewrite and the backup path
 
 #### `main()`
 - **Purpose**: CLI entry point
@@ -84,7 +86,7 @@ tests/
 2. **Fixed Sort Order**: Artist → album release date → track order is hard-coded; no alternative sort modes
 3. **No Restore**: Backups are written as JSON but there's no restore command yet
 4. **Browser Required**: OAuth flow requires browser access (no headless mode)
-5. **Non-atomic Rewrite**: A local-file URI in a later chunk can fail after the replace call has truncated the playlist; restore from backup
+5. **Non-atomic Rewrite**: A failure on a later chunk (e.g. a local-file URI) leaves the playlist partially rewritten; the error names the backup to restore from
 6. **Date Added Reset**: Rewriting the playlist resets each track's "date added"
 
 ## Future Enhancements
@@ -187,6 +189,9 @@ poetry run pytest -v
 ## Changelog
 
 ### 2026-10-28
+- Upgraded spotipy to 2.26.0: Spotify migrated playlist endpoints from `/tracks` to `/items` (Feb 2026 Dev Mode changes); 2.25.2 still used `/tracks`
+- Read entries' `item` field (falls back to deprecated `track`)
+- Clear errors instead of tracebacks when Spotify rejects a read or write, stating whether the playlist is unchanged, may have been modified, or is partially rewritten
 - Added `--dry-run` preview mode
 - Added automatic JSON backup before modifying playlists (`--no-backup`, `--backup-dir`)
 - Refactored `cli.py` into helpers; `main()` exits 1 on failure

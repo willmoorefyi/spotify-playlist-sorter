@@ -199,6 +199,11 @@ spotify_playlist_sorter/
 - Ensure you're running the command from the project root directory
 - Try providing credentials via command-line flags instead
 
+### "ERROR: Spotify rejected the update"
+
+- **"Playlist unchanged."** Spotify refused the first write, so nothing was modified. HTTP 403/404 usually means your account can't edit this playlist through the Web API.
+- **"The playlist may have been modified"** (rate limit / server error after retries) or **"partially rewritten"**: the playlist may be incomplete. Restore it from the backup file named in the message (in `backups/` by default).
+
 ## License
 
 This project is licensed under the BSD Zero Clause License (0BSD) - see the [LICENSE.md](LICENSE.md) file for details.

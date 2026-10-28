@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from spotify_playlist_sorter.cli import sort_playlist_by_artist, main, normalize_artist_name
 import sys
+from spotipy.exceptions import SpotifyException
 
 
 PLAYLIST_METADATA = {"name": "My Playlist", "snapshot_id": "snap_1"}
@@ -679,6 +680,117 @@ class TestLocalAndEpisodeItems:
             ["spotify:local:Me:Demo:Demo:120", "spotify:episode:e1", "spotify:track:z"],
         )
         assert "Warning: 1 local file(s) and 1 episode(s) found" in capsys.readouterr().out
+
+
+def make_tracks(n):
+    return [
+        {"track": {"artists": [{"name": f"Artist{i:03d}"}], "name": f"Song {i}", "uri": f"spotify:track:{i:03d}", "album": {"name": "A"}}}
+        for i in range(n)
+    ]
+
+
+def spotify_error(status, detail):
+    # spotipy prefixes the request URL to msg, separated by a newline.
+    return SpotifyException(status, -1, f"https://api.spotify.com/v1/playlists/playlist_123/items:\n {detail}")
+
+
+class TestWriteFailures:
+    """Rejected writes report whether the playlist changed and where the backup is."""
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_first_write_404_reports_unchanged(self, mock_spotify_class, tmp_path, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+        mock_sp.playlist_replace_items.side_effect = spotify_error(404, "Resource not found")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is False
+
+        out = capsys.readouterr().out
+        [backup_file] = (tmp_path / "backups").glob("playlist_123-*.json")
+        assert "ERROR: Spotify rejected the update (HTTP 404: Resource not found).\n" in out
+        assert "Playlist unchanged." in out
+        assert "Your account may not have permission to edit this playlist." in out
+        assert f"Backup: {backup_file.relative_to(tmp_path)}" in out
+        assert "api.spotify.com" not in out
+        mock_sp.playlist_add_items.assert_not_called()
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_first_write_400_no_permission_hint(self, mock_spotify_class, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+        mock_sp.playlist_replace_items.side_effect = spotify_error(400, "Invalid base62 id")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is False
+
+        out = capsys.readouterr().out
+        assert "Playlist unchanged." in out
+        assert "permission" not in out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_first_write_retries_exhausted_may_be_modified(self, mock_spotify_class, tmp_path, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, UNSORTED_ITEMS)
+        mock_sp.playlist_replace_items.side_effect = spotify_error(429, "Max Retries")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is False
+
+        out = capsys.readouterr().out
+        [backup_file] = (tmp_path / "backups").glob("playlist_123-*.json")
+        assert "Playlist unchanged." not in out
+        assert "The playlist may have been modified; check it on Spotify." in out
+        assert f"Restore from backup: {backup_file.relative_to(tmp_path)}" in out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_later_chunk_failure_reports_partial(self, mock_spotify_class, tmp_path, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, make_tracks(150))
+        mock_sp.playlist_add_items.side_effect = spotify_error(400, "Bad request")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is False
+
+        mock_sp.playlist_replace_items.assert_called_once_with(
+            "playlist_123", [f"spotify:track:{i:03d}" for i in range(100)]
+        )
+        out = capsys.readouterr().out
+        [backup_file] = (tmp_path / "backups").glob("playlist_123-*.json")
+        assert "rejected the update at track 101 of 150 (HTTP 400: Bad request)" in out
+        assert "partially rewritten (at least 100 of 150 tracks)" in out
+        assert f"Restore from backup: {backup_file.relative_to(tmp_path)}" in out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_later_chunk_failure_without_backup(self, mock_spotify_class, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, make_tracks(150))
+        mock_sp.playlist_add_items.side_effect = spotify_error(400, "Bad request")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123", backup=False) is False
+
+        mock_sp.playlist_replace_items.assert_called_once()
+        assert "No backup was written (--no-backup)." in capsys.readouterr().out
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_fetch_failure_reports_error(self, mock_spotify_class, tmp_path, capsys):
+        mock_sp = make_mock_sp(mock_spotify_class, [])
+        mock_sp.playlist_items.side_effect = spotify_error(403, "Forbidden")
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is False
+
+        assert "ERROR: Could not read playlist (HTTP 403: Forbidden)." in capsys.readouterr().out
+        assert not (tmp_path / "backups").exists()
+        mock_sp.playlist_replace_items.assert_not_called()
+
+
+class TestItemField:
+    """Entries may carry the media object under `item` (new) instead of `track` (deprecated)."""
+
+    @patch("spotify_playlist_sorter.cli.spotipy.Spotify")
+    def test_item_only_entries_sorted_and_backed_up(self, mock_spotify_class, tmp_path):
+        mock_sp = make_mock_sp(mock_spotify_class, [
+            {"added_at": "2025-01-01T00:00:00Z", "item": {"artists": [{"name": "Zebra"}], "name": "Song Z", "uri": "spotify:track:z", "album": {"name": "Z"}}},
+            {"added_at": "2025-01-02T00:00:00Z", "item": {"artists": [{"name": "Alpha"}], "name": "Song A", "uri": "spotify:track:a", "album": {"name": "A"}}},
+        ])
+
+        assert sort_playlist_by_artist("id", "secret", "uri", "playlist_123") is True
+
+        mock_sp.playlist_replace_items.assert_called_once_with("playlist_123", ["spotify:track:a", "spotify:track:z"])
+        [backup_file] = (tmp_path / "backups").glob("playlist_123-*.json")
+        data = json.loads(backup_file.read_text(encoding="utf-8"))
+        assert [t["uri"] for t in data["tracks"]] == ["spotify:track:z", "spotify:track:a"]
 
 
 class TestMain:
